@@ -21,7 +21,18 @@ export default async function handler(req,res){
   if(!['GET','POST'].includes(req.method))return json(res,405,{error:'Method not allowed.'});
   try{
     const url=new URL(req.url,'https://api.local'),action=url.searchParams.get('action');
-    if(action==='health')return json(res,200,{ok:true,service:'serg-api'});
+    if(action==='health'){
+      const missing=[];
+      if(!process.env.MONGODB_URI || !/^mongodb(?:\+srv)?:\/\//.test(process.env.MONGODB_URI))missing.push('MONGODB_URI');
+      if(!/^scrypt:[a-f0-9]{32}:[a-f0-9]{128}$/.test(process.env.OWNER_PASSWORD_HASH||''))missing.push('OWNER_PASSWORD_HASH');
+      if((process.env.RESOLVER_SECRET||'').length<32)missing.push('RESOLVER_SECRET');
+      if(missing.length)return json(res,200,{ok:false,service:'serg-api',status:'setup_required',missing});
+      if(url.searchParams.get('check')==='db'){
+        try{await(await database()).command({ping:1});}
+        catch{return json(res,503,{ok:false,service:'serg-api',status:'database_unreachable',next:'Check the Atlas database user, connection string and network access list.'});}
+      }
+      return json(res,200,{ok:true,service:'serg-api',database:url.searchParams.get('check')==='db'?'connected':'not_checked'});
+    }
     const expectedMethod=['login','logout','create','toggle'].includes(action)?'POST':'GET';
     if(req.method!==expectedMethod)throw new HttpError(405,'Method not allowed.');
     if(!['login','logout','create','toggle','links','session','resolve'].includes(action))throw new HttpError(404,'Unknown endpoint.');
