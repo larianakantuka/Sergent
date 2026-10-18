@@ -25,7 +25,7 @@ try{
   assert.equal(r.headers.get('access-control-allow-origin'),process.env.FRONTEND_ORIGIN);
   assert.equal((await request('session')).status,200);
   assert.equal((await request('create',{destination:'javascript:alert(1)'})).status,400);
-  r=await request('create',{destination:'https://example.com/path?x=1&y=2',label:'<script>alert(1)</script>'});assert.equal(r.status,201);const code=r.data.code;assert.match(code,/^[0-9]{5}$/);
+  r=await request('create',{destination:'https://example.com/path?x=1&y=2',label:'<script>alert(1)</script>'});assert.equal(r.status,201);const code=r.data.code;assert.match(code,/^[A-Za-z0-9]{5}$/);
   assert.equal((await request('resolve',undefined,'&code='+code)).status,401);
   const resolver={'X-Resolver-Key':process.env.RESOLVER_SECRET};
   r=await request('resolve',undefined,'&code='+code,resolver);assert.equal(r.status,200);assert.equal(r.data.destination,'https://example.com/path?x=1&y=2');
@@ -42,11 +42,10 @@ try{
   assert.equal((await request('logout',{})).status,200);assert.equal((await request('session')).status,401);token='';
   for(let i=0;i<12;i++)r=await request('login',{password:'wrong'});assert.equal(r.status,429);
   const links=db.collection('links');await links.deleteMany({});
-  for(let start=0;start<100000;start+=5000)await links.insertMany(Array.from({length:5000},(_,i)=>({_id:String(start+i).padStart(5,'0'),destination:'https://example.com',active:true,clicks:0,createdAt:new Date()})));
-  await assert.rejects(()=>allocateCode(links,'https://example.com','full'),/100,000/);
-  await links.deleteOne({_id:'00007'});assert.equal(await allocateCode(links,'https://example.com','last slot'),'00007');assert.equal(await links.countDocuments(),100000);
+  await links.insertOne({_id:'00007',destination:'https://example.com/',active:true,clicks:0,createdAt:new Date()});
+  assert.equal((await request('resolve',undefined,'&code=00007',resolver)).status,200,'legacy numeric codes continue to resolve');
   await links.deleteMany({});const codes=await Promise.all(Array.from({length:64},()=>allocateCode(links,'https://example.com','parallel')));assert.equal(new Set(codes).size,64);
-  console.log('PASS: MongoDB integration, auth, CORS, hashed sessions, expiry/logout, resolver secret, CRUD, literal search, counts, rate limit, 100000-code capacity, leading zero and concurrent allocation.');
+  console.log('PASS: MongoDB integration, auth, CORS, hashed sessions, expiry/logout, resolver secret, CRUD, literal search, counts, rate limit, base62 codes, legacy numeric links and concurrent allocation.');
   // Keep a local demo backend only when explicitly requested by the QA launcher.
   if(process.env.SERG_KEEP_TEST_SERVER==='yes'){
     await db.collection('attempts').deleteMany({});await links.deleteMany({});
