@@ -19,6 +19,7 @@ async function request(action,data,query='',headers={}){
 }
 try{
   assert.equal((await request('create',{destination:'https://example.com'})).status,401);
+  assert.equal((await request('delete',{code:'abc12'})).status,401);
   assert.equal((await request('login',{password:'wrong'})).status,401);
   assert.equal((await request('login',{password:'local-owner-password-123'},'',{Origin:'https://evil.example'})).status,403);
   let r=await request('login',{password:'local-owner-password-123'},'',{Origin:process.env.FRONTEND_ORIGIN});assert.equal(r.status,200);token=r.data.token;assert.match(token,/^[a-f0-9]{64}$/);
@@ -36,6 +37,17 @@ try{
   assert.equal((await request('toggle',{code,active:false})).status,200);assert.equal((await request('resolve',undefined,'&code='+code,resolver)).status,410);
   await request('toggle',{code,active:true});assert.equal((await request('resolve',undefined,'&code='+code,resolver)).status,200);
   assert.equal((await request('resolve',undefined,'&code=123456',resolver)).status,404);
+  assert.equal((await request('delete',undefined,'&code='+code)).status,405);
+  assert.equal((await request('delete',{code:'too-long'})).status,400);
+  assert.equal((await request('delete',{code})).status,200);
+  assert.equal((await request('resolve',undefined,'&code='+code,resolver)).status,404);
+  assert.equal((await request('toggle',{code,active:true})).status,404);
+  assert.equal((await request('delete',{code})).status,404);
+  r=await request('links');assert.equal(r.data.links.length,0);assert.equal(r.data.total,0);assert.equal(r.data.clicks,0);
+  r=await request('links',undefined,'&q='+code);assert.equal(r.data.links.length,0);
+  const reservation=await db.collection('links').findOne({_id:code});
+  assert.equal(reservation.deleted,true);assert.deepEqual(Object.keys(reservation).sort(),['_id','deleted','deletedAt']);
+  await assert.rejects(()=>db.collection('links').insertOne({_id:code,destination:'https://other.example/'}),error=>error.code===11000);
   const sessionRecord=await db.collection('sessions').findOne({});assert.notEqual(sessionRecord._id,token,'tokens must be hashed');
   await db.collection('sessions').updateOne({_id:sessionRecord._id},{$set:{expiresAt:new Date(0)}});assert.equal((await request('session')).status,401);
   token=(await request('login',{password:'local-owner-password-123'})).data.token;
@@ -45,7 +57,7 @@ try{
   await links.insertOne({_id:'00007',destination:'https://example.com/',active:true,clicks:0,createdAt:new Date()});
   assert.equal((await request('resolve',undefined,'&code=00007',resolver)).status,200,'legacy numeric codes continue to resolve');
   await links.deleteMany({});const codes=await Promise.all(Array.from({length:64},()=>allocateCode(links,'https://example.com','parallel')));assert.equal(new Set(codes).size,64);
-  console.log('PASS: MongoDB integration, auth, CORS, hashed sessions, expiry/logout, resolver secret, CRUD, literal search, counts, rate limit, base62 codes, legacy numeric links and concurrent allocation.');
+  console.log('PASS: MongoDB integration, auth, CORS, hashed sessions, expiry/logout, resolver secret, CRUD, literal search, counts, rate limit, permanent deletion with reserved codes, base62 codes, legacy numeric links and concurrent allocation.');
   // Keep a local demo backend only when explicitly requested by the QA launcher.
   if(process.env.SERG_KEEP_TEST_SERVER==='yes'){
     await db.collection('attempts').deleteMany({});await links.deleteMany({});
