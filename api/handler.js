@@ -33,9 +33,9 @@ export default async function handler(req,res){
       }
       return json(res,200,{ok:true,service:'serg-api',database:url.searchParams.get('check')==='db'?'connected':'not_checked'});
     }
-    const expectedMethod=['login','logout','create','toggle'].includes(action)?'POST':'GET';
+    const expectedMethod=['login','logout','create','toggle','delete'].includes(action)?'POST':'GET';
     if(req.method!==expectedMethod)throw new HttpError(405,'Method not allowed.');
-    if(!['login','logout','create','toggle','links','session','resolve'].includes(action))throw new HttpError(404,'Unknown endpoint.');
+    if(!['login','logout','create','toggle','delete','links','session','resolve'].includes(action))throw new HttpError(404,'Unknown endpoint.');
     const secret=process.env.RESOLVER_SECRET||'';
     if(secret.length<32)throw new Error('Missing resolver configuration');
     if(action==='resolve'&&!safeEqual(String(req.headers['x-resolver-key']||''),secret))throw new HttpError(401,'Unauthorized.');
@@ -44,9 +44,9 @@ export default async function handler(req,res){
     if(action==='resolve'){
       if(!safeEqual(String(req.headers['x-resolver-key']||''),secret))throw new HttpError(401,'Unauthorized.');
       const code=url.searchParams.get('code');if(!validCode(code))throw new HttpError(404,'Unknown link.');
-      const link=await links.findOne({_id:code});if(!link)throw new HttpError(404,'Unknown link.');if(!link.active)throw new HttpError(410,'Link paused.');
+      const link=await links.findOne({_id:code,deleted:{$ne:true}});if(!link)throw new HttpError(404,'Unknown link.');if(!link.active)throw new HttpError(410,'Link paused.');
       if(!validDestination(link.destination))throw new HttpError(502,'Destination unavailable.');
-      if(url.searchParams.get('count')!=='0')await links.updateOne({_id:code},{$inc:{clicks:1}});
+      if(url.searchParams.get('count')!=='0')await links.updateOne({_id:code,deleted:{$ne:true}},{$inc:{clicks:1}});
       return json(res,200,{destination:link.destination});
     }
     if(action==='login'){
@@ -73,15 +73,21 @@ export default async function handler(req,res){
       if(Buffer.byteLength(label)>120)throw new HttpError(400,'Keep the label within 120 bytes.');
       const code=await allocateCode(links,new URL(input.destination).href,label);return json(res,201,{code});
     }
+    if(action==='delete'){
+      const input=await body(req);if(!validCode(input.code))throw new HttpError(400,'Invalid short code.');
+      // Erase redirect data permanently; retain only the code reservation to prevent reuse.
+      const result=await links.updateOne({_id:input.code,deleted:{$ne:true}},{$set:{deleted:true,deletedAt:new Date()},$unset:{destination:'',label:'',active:'',clicks:'',createdAt:''}});
+      if(!result.matchedCount)throw new HttpError(404,'Unknown link.');return json(res,200,{ok:true});
+    }
     if(action==='toggle'){
       const input=await body(req);if(!validCode(input.code)||typeof input.active!=='boolean')throw new HttpError(400,'Invalid link status.');
-      const result=await links.updateOne({_id:input.code},{$set:{active:input.active}});if(!result.matchedCount)throw new HttpError(404,'Unknown link.');return json(res,200,{ok:true});
+      const result=await links.updateOne({_id:input.code,deleted:{$ne:true}},{$set:{active:input.active}});if(!result.matchedCount)throw new HttpError(404,'Unknown link.');return json(res,200,{ok:true});
     }
     if(action==='links'){
       const q=(url.searchParams.get('q')||'').slice(0,120),escaped=q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-      const filter=q?{$or:['_id','label','destination'].map(field=>({[field]:{$regex:escaped,$options:'i'}}))}:{};
+      const filter=q?{deleted:{$ne:true},$or:['_id','label','destination'].map(field=>({[field]:{$regex:escaped,$options:'i'}}))}:{deleted:{$ne:true}};
       const count=await links.countDocuments(filter),pages=Math.max(1,Math.ceil(count/20)),page=Math.min(pages,Math.max(1,Number.parseInt(url.searchParams.get('page'),10)||1));
-      const [rows,stats]=await Promise.all([links.find(filter).sort({createdAt:-1,_id:-1}).skip((page-1)*20).limit(20).toArray(),links.aggregate([{$group:{_id:null,total:{$sum:1},clicks:{$sum:'$clicks'}}}]).toArray()]);
+      const [rows,stats]=await Promise.all([links.find(filter).sort({createdAt:-1,_id:-1}).skip((page-1)*20).limit(20).toArray(),links.aggregate([{$match:{deleted:{$ne:true}}},{$group:{_id:null,total:{$sum:1},clicks:{$sum:'$clicks'}}}]).toArray()]);
       return json(res,200,{links:rows.map(({_id,...row})=>({code:_id,...row})),page,pages,total:stats[0]?.total||0,clicks:stats[0]?.clicks||0});
     }
   }catch(error){if(!error.status)console.error('serg backend request failed:',error.name);return json(res,error.status||503,{error:error.status?error.message:'Backend unavailable. Check its MongoDB connection and environment settings.'});}
